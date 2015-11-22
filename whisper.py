@@ -943,3 +943,61 @@ def file_diff(fh_from, fh_to, ignore_empty=False):
     archive_diffs.append((archive_number, diffs, points.__len__()))
     untilTime = startTime
   return archive_diffs
+
+
+def load_many(path, points, autoAlign=False):
+  """load_many(path, points)
+  path is a string
+  points is a list of (timestamp,value) points, *already* ordered, oldest first.
+  autoAlign is a bool. If True, the whole timeseries will be displaced, so that
+    the oldest point will be aligned with each archive within the file:
+        (oldestTimestamp % secondsPerPoint1) = (oldestTimestamp % secondsPerPoint2) = (oldestTimestamp % secondesPerPointN) = 0
+
+  returns int. If autoAlign was passed, the number of seconds the data was displaced.
+"""
+  if not points: return
+  with open(path, 'r+b') as fh:
+    return file_load_many(fh, points, autoAlign)
+
+
+def file_load_many(fh, points, autoAlign):
+  if LOCK:
+    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+  header = __readHeader(fh)
+
+  currentArchive = header['archives'][0]
+  currentPoints = []
+
+  iter_points = iter(points)
+  oldestPoint = iter_points.next()
+  oldestTimestamp = int(oldestPoint[0])
+  offset = 0
+
+  if autoAlign:
+    secondsPerPoint = tuple([archive['secondsPerPoint'] for archive in header['archives']])
+    zero = (0,) * len(secondsPerPoint)
+    while tuple([(oldestTimestamp + offset) % spp for spp in secondsPerPoint]) != zero:
+      offset += 1
+
+  oldestTimestamp += offset
+
+  for (originalTs, value) in itertools.chain(iter([oldestPoint]), iter_points):
+    (ts, value) = int(originalTs) + offset, float(value)
+    age = ts - oldestTimestamp
+
+    if currentArchive['retention'] <= age:  # We can't fit any more points in this archive
+      if currentPoints:  # Commit all the points we've found that it can fit
+        __archive_update_many(fh, header, currentArchive, currentPoints)
+        currentPoints = []
+        oldestTimestamp = ts
+
+    currentPoints.append((ts, value))
+
+  if currentPoints:  # Don't forget to commit after we've checked all the archives
+    __archive_update_many(fh, header, currentArchive, currentPoints)
+
+  if AUTOFLUSH:
+    fh.flush()
+    os.fsync(fh.fileno())
+
+  return offset

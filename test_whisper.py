@@ -586,6 +586,49 @@ class TestWhisper(WhisperTestBase):
         whisper.AUTOFLUSH = original_autoflush
         whisper.CACHE_HEADERS = original_caching
 
+    def test_load_many(self):
+        """
+        Generate data, load data into a multilevered archive, retrieve and verify aggregation
+        """
+
+        retention_schema = [(1, 10), (2, 10), (4, 10)]
+
+        num_data_points = 40
+
+        whisper.create(self.filename, retention_schema, aggregationMethod='sum')
+
+        # In order for the aggregation to work, the first timestamp must be
+        # aligned with the datapoint size of every interval so
+        # (actual_time % 1) = (actual_time % 2) = (actual_time % 4) = 0
+        actual_time = time.time()
+
+        tn = actual_time - num_data_points
+
+        data = []
+        for i in range(num_data_points):
+            data.append((tn + i +1, 1))
+
+        offset = whisper.load_many(self.filename, data, autoAlign=True)
+        actual_time += offset
+
+        # Check highest resolution level by retrieving only latest 10
+        fetched = whisper.fetch(self.filename, data[-11][0]+offset, now=actual_time)[1]
+        for value_fetched in fetched:
+            self.assertEqual(1, value_fetched)
+
+        # Check medium resolution level by retrieving 20 secs.
+        fetched = whisper.fetch(self.filename, data[-21][0]+offset, now=actual_time)[1]
+        for value_fetched in fetched:
+            self.assertEqual(2, value_fetched)
+
+        # Check lowest resolution level by retrieving all values
+        fetched = whisper.fetch(
+            self.filename, 0, now=actual_time)[1]
+
+        for value_fetched in fetched:
+            self.assertEqual(4, value_fetched)
+
+
 
 class TestgetUnitString(unittest.TestCase):
     def test_function(self):
